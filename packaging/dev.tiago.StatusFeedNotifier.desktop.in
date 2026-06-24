@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Status Feed Notifier
-Comment=Subscribe to RSS and Atom status feeds
-Exec=@EXEC@
-Icon=dev.tiago.StatusFeedNotifier
-Terminal=false
-Categories=Network;GTK;
-StartupNotify=true

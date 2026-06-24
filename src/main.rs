@@ -91,6 +91,11 @@ struct FetchedEntry {
 }
 
 fn main() -> glib::ExitCode {
+    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return glib::ExitCode::SUCCESS;
+    }
+
     adw::init().expect("failed to initialize libadwaita");
 
     let app = adw::Application::builder().application_id(APP_ID).build();

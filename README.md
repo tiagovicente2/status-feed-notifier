@@ -16,31 +16,40 @@ cargo run
 
 ## Install on Linux
 
-Install it as a per-user desktop app:
+Install the latest GitHub release as a per-user desktop app:
 
 ```bash
-scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/tiagovicente2/status-feed-notifier/main/scripts/install.sh | bash
 ```
 
 This installs:
 
 ```text
-~/.local/bin/status-feed-notifier
+~/.local/share/status-feed-notifier/app/
+~/.local/bin/status-feed-notifier -> ~/.local/share/status-feed-notifier/app/status-feed-notifier
 ~/.local/share/applications/dev.tiago.StatusFeedNotifier.desktop
-~/.local/share/icons/hicolor/scalable/apps/dev.tiago.StatusFeedNotifier.svg
 ```
 
 To also start it when you log in:
 
 ```bash
-scripts/install.sh --autostart
+curl -fsSL https://raw.githubusercontent.com/tiagovicente2/status-feed-notifier/main/scripts/install.sh | bash -s -- --autostart
 ```
 
-Uninstall:
+For local development, build and install a release archive from this checkout:
+
+```bash
+scripts/package-release.sh
+scripts/install.sh --archive dist/status-feed-notifier-linux-x64.tar.gz
+```
+
+Uninstall the app files:
 
 ```bash
 scripts/uninstall.sh
 ```
+
+Uninstalling does not remove feed data.
 
 Runtime data is stored in:
 

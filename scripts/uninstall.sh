@@ -2,22 +2,19 @@
 set -euo pipefail
 
 APP_ID="dev.tiago.StatusFeedNotifier"
-BIN_NAME="status-feed-notifier"
-BIN_DIR="${HOME}/.local/bin"
-DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
-CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+APP_NAME="status-feed-notifier"
+INSTALL_DIR="${STATUS_FEED_NOTIFIER_INSTALL_DIR:-$HOME/.local/share/status-feed-notifier/app}"
+BIN_DIR="${STATUS_FEED_NOTIFIER_BIN_DIR:-$HOME/.local/bin}"
+DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+LEGACY_ICON="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/${APP_ID}.svg"
 
-rm -f "${BIN_DIR}/${BIN_NAME}"
-rm -f "${DATA_HOME}/applications/${APP_ID}.desktop"
-rm -f "${DATA_HOME}/icons/hicolor/scalable/apps/${APP_ID}.svg"
-rm -f "${CONFIG_HOME}/autostart/${APP_ID}.desktop"
+rm -rf "$INSTALL_DIR"
+rm -f "$BIN_DIR/$APP_NAME"
+rm -f "$DESKTOP_DIR/${APP_ID}.desktop"
+rm -f "$AUTOSTART_DIR/${APP_ID}.desktop"
+rm -f "$LEGACY_ICON"
 
-if command -v update-desktop-database >/dev/null 2>&1; then
-  update-desktop-database "${DATA_HOME}/applications" >/dev/null 2>&1 || true
-fi
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
 
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-  gtk-update-icon-cache -q "${DATA_HOME}/icons/hicolor" >/dev/null 2>&1 || true
-fi
-
-echo "Uninstalled ${BIN_NAME}"
+printf '[status-feed-notifier] uninstalled\n'
