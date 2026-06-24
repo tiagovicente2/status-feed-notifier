@@ -87,8 +87,9 @@ struct AppWidgets {
     entry_list: gtk::ListBox,
     refresh_button: gtk::Button,
     status_label: gtk::Label,
-    interval_spin: gtk::SpinButton,
-    notifications_switch: gtk::Switch,
+    interval_minutes: Cell<i32>,
+    interval_value_label: gtk::Label,
+    notifications_check: gtk::CheckButton,
     _hold_guard: gio::ApplicationHoldGuard,
     _tray_handle: Option<ksni::blocking::Handle<StatusTray>>,
 }
@@ -116,6 +117,17 @@ struct StatusTray {
     sender: Sender<UiCommand>,
     icon_name: String,
     icon_theme_path: String,
+}
+
+#[derive(Clone, Copy)]
+enum SymbolicIcon {
+    Add,
+    ExternalLink,
+    Minus,
+    Quit,
+    Refresh,
+    Remove,
+    Settings,
 }
 
 fn main() -> glib::ExitCode {
@@ -223,18 +235,9 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         .build();
     header.set_title_widget(Some(&title));
 
-    let refresh_button = gtk::Button::builder()
-        .icon_name("view-refresh-symbolic")
-        .tooltip_text("Refresh feeds")
-        .build();
-    let settings_button = gtk::Button::builder()
-        .icon_name("preferences-system-symbolic")
-        .tooltip_text("Settings")
-        .build();
-    let quit_button = gtk::Button::builder()
-        .icon_name("application-exit-symbolic")
-        .tooltip_text("Quit")
-        .build();
+    let refresh_button = icon_button(SymbolicIcon::Refresh, "Refresh feeds");
+    let settings_button = icon_button(SymbolicIcon::Settings, "Settings");
+    let quit_button = icon_button(SymbolicIcon::Quit, "Quit");
     header.pack_end(&quit_button);
     header.pack_end(&settings_button);
     header.pack_end(&refresh_button);
@@ -262,10 +265,7 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         .placeholder_text("RSS or Atom feed URL")
         .hexpand(true)
         .build();
-    let add_button = gtk::Button::builder()
-        .icon_name("list-add-symbolic")
-        .tooltip_text("Add feed")
-        .build();
+    let add_button = icon_button(SymbolicIcon::Add, "Add feed");
     add_row.append(&feed_entry);
     add_row.append(&add_button);
     sidebar.append(&add_row);
@@ -287,11 +287,24 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         .xalign(0.0)
         .hexpand(true)
         .build();
-    let interval_spin = gtk::SpinButton::with_range(1.0, 60.0, 1.0);
-    interval_spin.set_value(5.0);
-    interval_spin.set_width_chars(3);
+    let interval_control = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    interval_control.add_css_class("linked");
+    let interval_decrease_button = icon_button(SymbolicIcon::Minus, "Decrease refresh interval");
+    let interval_value_label = gtk::Label::builder()
+        .label("5")
+        .width_chars(2)
+        .xalign(0.5)
+        .build();
+    let interval_value_frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    interval_value_frame.set_size_request(44, 34);
+    interval_value_frame.add_css_class("button");
+    interval_value_frame.append(&interval_value_label);
+    let interval_increase_button = icon_button(SymbolicIcon::Add, "Increase refresh interval");
+    interval_control.append(&interval_decrease_button);
+    interval_control.append(&interval_value_frame);
+    interval_control.append(&interval_increase_button);
     interval_row.append(&interval_label);
-    interval_row.append(&interval_spin);
+    interval_row.append(&interval_control);
 
     let notifications_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let notifications_label = gtk::Label::builder()
@@ -299,9 +312,13 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         .xalign(0.0)
         .hexpand(true)
         .build();
-    let notifications_switch = gtk::Switch::builder().active(true).build();
+    let notifications_check = gtk::CheckButton::builder()
+        .active(true)
+        .valign(gtk::Align::Center)
+        .tooltip_text("Desktop notifications")
+        .build();
     notifications_row.append(&notifications_label);
-    notifications_row.append(&notifications_switch);
+    notifications_row.append(&notifications_check);
     settings_group.append(&interval_row);
     settings_group.append(&notifications_row);
     sidebar.append(&settings_group);
@@ -341,8 +358,9 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         entry_list,
         refresh_button,
         status_label,
-        interval_spin,
-        notifications_switch,
+        interval_minutes: Cell::new(5),
+        interval_value_label,
+        notifications_check,
         _hold_guard: app.hold(),
         _tray_handle: tray_handle,
     });
@@ -351,6 +369,7 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     connect_window_lifecycle(&window);
     connect_settings_button(&window, &settings_button);
     connect_quit_button(app, &quit_button);
+    connect_interval_controls(&ui, &interval_decrease_button, &interval_increase_button);
     connect_controls(&ui, &add_button);
     render_from_store(&ui);
     attach_poll_receiver(&ui, receiver);
@@ -433,33 +452,35 @@ fn show_settings_dialog(parent: &adw::ApplicationWindow) {
         .title("Settings")
         .search_enabled(false)
         .build();
-    let page = adw::PreferencesPage::builder()
-        .title("Settings")
-        .icon_name("preferences-system-symbolic")
-        .build();
+    let page = adw::PreferencesPage::builder().title("Settings").build();
     let startup_group = adw::PreferencesGroup::builder().title("Startup").build();
-    let autostart_row = adw::SwitchRow::builder()
+    let autostart_row = adw::ActionRow::builder()
         .title("Start at login")
         .subtitle("Run quietly in the background after you sign in")
-        .active(autostart_enabled())
         .build();
+    let autostart_check = gtk::CheckButton::builder()
+        .active(autostart_enabled())
+        .valign(gtk::Align::Center)
+        .build();
+    autostart_row.add_suffix(&autostart_check);
+    autostart_row.set_activatable_widget(Some(&autostart_check));
 
-    connect_autostart_row(&autostart_row, &dialog);
+    connect_autostart_check(&autostart_check, &dialog);
     startup_group.add(&autostart_row);
     page.add(&startup_group);
     dialog.add(&page);
     dialog.present(Some(parent));
 }
 
-fn connect_autostart_row(row: &adw::SwitchRow, dialog: &adw::PreferencesDialog) {
+fn connect_autostart_check(check: &gtk::CheckButton, dialog: &adw::PreferencesDialog) {
     let handling_change = Rc::new(Cell::new(false));
     let dialog = dialog.clone();
-    row.connect_active_notify(move |row| {
+    check.connect_toggled(move |check| {
         if handling_change.get() {
             return;
         }
 
-        let enabled = row.is_active();
+        let enabled = check.is_active();
         match set_autostart_enabled(enabled) {
             Ok(()) => {
                 let message = if enabled {
@@ -471,7 +492,7 @@ fn connect_autostart_row(row: &adw::SwitchRow, dialog: &adw::PreferencesDialog) 
             }
             Err(err) => {
                 handling_change.set(true);
-                row.set_active(!enabled);
+                check.set_active(!enabled);
                 handling_change.set(false);
                 dialog.add_toast(adw::Toast::new(&format!(
                     "Could not update login startup: {err}"
@@ -481,11 +502,176 @@ fn connect_autostart_row(row: &adw::SwitchRow, dialog: &adw::PreferencesDialog) 
     });
 }
 
+fn icon_button(icon: SymbolicIcon, tooltip: &str) -> gtk::Button {
+    let symbol = symbolic_icon(icon);
+    let button = gtk::Button::builder().tooltip_text(tooltip).build();
+    button.set_child(Some(&symbol));
+    button
+}
+
+fn symbolic_icon(icon: SymbolicIcon) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder()
+        .content_width(16)
+        .content_height(16)
+        .width_request(16)
+        .height_request(16)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .build();
+    area.set_draw_func(move |area, context, width, height| {
+        draw_symbolic_icon(area, context, width, height, icon);
+    });
+    area
+}
+
+fn draw_symbolic_icon(
+    area: &gtk::DrawingArea,
+    context: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    icon: SymbolicIcon,
+) {
+    let color = area.color();
+    context.set_source_rgba(
+        color.red() as f64,
+        color.green() as f64,
+        color.blue() as f64,
+        color.alpha() as f64,
+    );
+    context.set_line_cap(gtk::cairo::LineCap::Round);
+    context.set_line_join(gtk::cairo::LineJoin::Round);
+    context.set_line_width(1.7);
+
+    let size = width.min(height) as f64;
+    let offset_x = (width as f64 - size) / 2.0;
+    let offset_y = (height as f64 - size) / 2.0;
+    let _ = context.save();
+    context.translate(offset_x, offset_y);
+    context.scale(size / 16.0, size / 16.0);
+
+    match icon {
+        SymbolicIcon::Add => draw_add_icon(context),
+        SymbolicIcon::ExternalLink => draw_external_link_icon(context),
+        SymbolicIcon::Minus => draw_minus_icon(context),
+        SymbolicIcon::Quit => draw_quit_icon(context),
+        SymbolicIcon::Refresh => draw_refresh_icon(context),
+        SymbolicIcon::Remove => draw_remove_icon(context),
+        SymbolicIcon::Settings => draw_settings_icon(context),
+    }
+
+    let _ = context.restore();
+}
+
+fn draw_add_icon(context: &gtk::cairo::Context) {
+    context.move_to(8.0, 3.5);
+    context.line_to(8.0, 12.5);
+    context.move_to(3.5, 8.0);
+    context.line_to(12.5, 8.0);
+    let _ = context.stroke();
+}
+
+fn draw_minus_icon(context: &gtk::cairo::Context) {
+    context.move_to(3.5, 8.0);
+    context.line_to(12.5, 8.0);
+    let _ = context.stroke();
+}
+
+fn draw_refresh_icon(context: &gtk::cairo::Context) {
+    use std::f64::consts::PI;
+
+    context.arc(8.0, 8.0, 5.2, PI * 0.25, PI * 1.85);
+    let _ = context.stroke();
+    context.move_to(12.6, 4.6);
+    context.line_to(12.7, 1.8);
+    context.line_to(14.6, 3.8);
+    let _ = context.stroke();
+}
+
+fn draw_settings_icon(context: &gtk::cairo::Context) {
+    use std::f64::consts::PI;
+
+    context.arc(8.0, 8.0, 2.4, 0.0, PI * 2.0);
+    let _ = context.stroke();
+
+    for step in 0..8 {
+        let angle = step as f64 * PI / 4.0;
+        let inner_x = 8.0 + angle.cos() * 4.7;
+        let inner_y = 8.0 + angle.sin() * 4.7;
+        let outer_x = 8.0 + angle.cos() * 6.2;
+        let outer_y = 8.0 + angle.sin() * 6.2;
+        context.move_to(inner_x, inner_y);
+        context.line_to(outer_x, outer_y);
+    }
+    let _ = context.stroke();
+}
+
+fn draw_quit_icon(context: &gtk::cairo::Context) {
+    use std::f64::consts::PI;
+
+    context.move_to(8.0, 2.4);
+    context.line_to(8.0, 7.4);
+    let _ = context.stroke();
+    context.arc(8.0, 9.0, 5.0, PI * 0.78, PI * 2.22);
+    let _ = context.stroke();
+}
+
+fn draw_remove_icon(context: &gtk::cairo::Context) {
+    context.move_to(4.0, 5.2);
+    context.line_to(12.0, 5.2);
+    context.move_to(6.4, 3.2);
+    context.line_to(9.6, 3.2);
+    context.move_to(5.4, 6.4);
+    context.line_to(5.9, 12.5);
+    context.line_to(10.1, 12.5);
+    context.line_to(10.6, 6.4);
+    context.move_to(7.3, 7.4);
+    context.line_to(7.3, 11.1);
+    context.move_to(8.7, 7.4);
+    context.line_to(8.7, 11.1);
+    let _ = context.stroke();
+}
+
+fn draw_external_link_icon(context: &gtk::cairo::Context) {
+    context.move_to(6.0, 4.3);
+    context.line_to(4.2, 4.3);
+    context.line_to(4.2, 11.8);
+    context.line_to(11.7, 11.8);
+    context.line_to(11.7, 10.0);
+    context.move_to(8.0, 4.2);
+    context.line_to(12.2, 4.2);
+    context.line_to(12.2, 8.4);
+    context.move_to(12.0, 4.4);
+    context.line_to(7.2, 9.2);
+    let _ = context.stroke();
+}
+
 fn connect_quit_button(app: &adw::Application, quit_button: &gtk::Button) {
     let app = app.clone();
     quit_button.connect_clicked(move |_| {
         app.quit();
     });
+}
+
+fn connect_interval_controls(
+    ui: &Rc<AppWidgets>,
+    decrease_button: &gtk::Button,
+    increase_button: &gtk::Button,
+) {
+    let ui_for_decrease = Rc::clone(ui);
+    decrease_button.connect_clicked(move |_| {
+        set_interval_minutes(&ui_for_decrease, ui_for_decrease.interval_minutes.get() - 1);
+    });
+
+    let ui_for_increase = Rc::clone(ui);
+    increase_button.connect_clicked(move |_| {
+        set_interval_minutes(&ui_for_increase, ui_for_increase.interval_minutes.get() + 1);
+    });
+}
+
+fn set_interval_minutes(ui: &Rc<AppWidgets>, value: i32) {
+    let value = value.clamp(1, 60);
+    ui.interval_minutes.set(value);
+    ui.interval_value_label.set_text(&value.to_string());
 }
 
 fn connect_controls(ui: &Rc<AppWidgets>, add_button: &gtk::Button) {
@@ -536,7 +722,7 @@ fn attach_ui_command_receiver(ui: &Rc<AppWidgets>, receiver: std::sync::mpsc::Re
 fn attach_auto_refresh(ui: &Rc<AppWidgets>) {
     let ui = Rc::clone(ui);
     glib::timeout_add_seconds_local(30, move || {
-        let interval_seconds = (ui.interval_spin.value_as_int().max(1) as i64) * 60;
+        let interval_seconds = (ui.interval_minutes.get().max(1) as i64) * 60;
         let elapsed = now_unix() - ui.last_poll.get();
         if elapsed >= interval_seconds {
             start_poll(&ui);
@@ -608,7 +794,7 @@ fn handle_poll_result(ui: &Rc<AppWidgets>, result: Result<PollOutcome, String>) 
         Ok(outcome) => {
             render_feeds(ui, &outcome.feeds);
             render_entries(ui, &outcome.entries);
-            if ui.notifications_switch.is_active() {
+            if ui.notifications_check.is_active() {
                 send_notifications(ui, &outcome.notifications);
             }
 
@@ -709,14 +895,12 @@ impl ksni::Tray for StatusTray {
         vec![
             StandardItem {
                 label: "Open".into(),
-                icon_name: "window-new".into(),
                 activate: Box::new(|tray: &mut StatusTray| tray.send(UiCommand::ShowWindow)),
                 ..Default::default()
             }
             .into(),
             StandardItem {
                 label: "Refresh now".into(),
-                icon_name: "view-refresh".into(),
                 activate: Box::new(|tray: &mut StatusTray| tray.send(UiCommand::Refresh)),
                 ..Default::default()
             }
@@ -724,7 +908,6 @@ impl ksni::Tray for StatusTray {
             ksni::MenuItem::Separator,
             StandardItem {
                 label: "Quit".into(),
-                icon_name: "application-exit".into(),
                 activate: Box::new(|tray: &mut StatusTray| tray.send(UiCommand::Quit)),
                 ..Default::default()
             }
@@ -819,11 +1002,8 @@ fn render_feeds(ui: &Rc<AppWidgets>, feeds: &[Feed]) {
         text_box.append(&title);
         text_box.append(&url);
 
-        let remove_button = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
-            .tooltip_text("Remove feed")
-            .valign(gtk::Align::Center)
-            .build();
+        let remove_button = icon_button(SymbolicIcon::Remove, "Remove feed");
+        remove_button.set_valign(gtk::Align::Center);
         remove_button.add_css_class("flat");
         let ui_for_remove = Rc::clone(ui);
         let feed_id = feed.id;
@@ -889,12 +1069,9 @@ fn render_entries(ui: &Rc<AppWidgets>, entries: &[StoredEntry]) {
             text_box.append(&summary);
         }
 
-        let open_button = gtk::Button::builder()
-            .icon_name("adw-external-link-symbolic")
-            .tooltip_text("Open entry")
-            .valign(gtk::Align::Center)
-            .sensitive(entry.url.is_some())
-            .build();
+        let open_button = icon_button(SymbolicIcon::ExternalLink, "Open entry");
+        open_button.set_valign(gtk::Align::Center);
+        open_button.set_sensitive(entry.url.is_some());
         open_button.add_css_class("flat");
         if let Some(url) = entry.url.clone() {
             open_button.connect_clicked(move |_| {
