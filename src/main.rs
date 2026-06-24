@@ -590,18 +590,25 @@ fn draw_refresh_icon(context: &gtk::cairo::Context) {
 fn draw_settings_icon(context: &gtk::cairo::Context) {
     use std::f64::consts::PI;
 
-    context.arc(8.0, 8.0, 2.4, 0.0, PI * 2.0);
+    for tooth in 0..8 {
+        let angle = tooth as f64 * PI / 4.0;
+        let next_angle = angle + PI / 8.0;
+        let outer_x = 8.0 + angle.cos() * 6.0;
+        let outer_y = 8.0 + angle.sin() * 6.0;
+        let inner_x = 8.0 + next_angle.cos() * 4.4;
+        let inner_y = 8.0 + next_angle.sin() * 4.4;
+
+        if tooth == 0 {
+            context.move_to(outer_x, outer_y);
+        } else {
+            context.line_to(outer_x, outer_y);
+        }
+        context.line_to(inner_x, inner_y);
+    }
+    context.close_path();
     let _ = context.stroke();
 
-    for step in 0..8 {
-        let angle = step as f64 * PI / 4.0;
-        let inner_x = 8.0 + angle.cos() * 4.7;
-        let inner_y = 8.0 + angle.sin() * 4.7;
-        let outer_x = 8.0 + angle.cos() * 6.2;
-        let outer_y = 8.0 + angle.sin() * 6.2;
-        context.move_to(inner_x, inner_y);
-        context.line_to(outer_x, outer_y);
-    }
+    context.arc(8.0, 8.0, 2.1, 0.0, PI * 2.0);
     let _ = context.stroke();
 }
 
