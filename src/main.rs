@@ -15,6 +15,8 @@ use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "dev.tiago.StatusFeedNotifier";
+const DISPLAY_NAME: &str = "Status Feed Notifier";
+const DESKTOP_COMMENT: &str = "Subscribe to RSS and Atom status feeds";
 const DEFAULT_FEED_URL: &str = "https://status.claude.com/history.atom";
 const USER_AGENT: &str = "StatusFeedNotifier/0.1 (+https://status.claude.com/)";
 
@@ -225,11 +227,16 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         .icon_name("view-refresh-symbolic")
         .tooltip_text("Refresh feeds")
         .build();
+    let settings_button = gtk::Button::builder()
+        .icon_name("preferences-system-symbolic")
+        .tooltip_text("Settings")
+        .build();
     let quit_button = gtk::Button::builder()
         .icon_name("application-exit-symbolic")
         .tooltip_text("Quit")
         .build();
     header.pack_end(&quit_button);
+    header.pack_end(&settings_button);
     header.pack_end(&refresh_button);
     toolbar_view.add_top_bar(&header);
 
@@ -342,6 +349,7 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
 
     install_actions(app, &window);
     connect_window_lifecycle(&window);
+    connect_settings_button(&window, &settings_button);
     connect_quit_button(app, &quit_button);
     connect_controls(&ui, &add_button);
     render_from_store(&ui);
@@ -410,6 +418,66 @@ fn connect_window_lifecycle(window: &adw::ApplicationWindow) {
     window.connect_close_request(|window| {
         window.set_visible(false);
         glib::Propagation::Stop
+    });
+}
+
+fn connect_settings_button(window: &adw::ApplicationWindow, settings_button: &gtk::Button) {
+    let window = window.clone();
+    settings_button.connect_clicked(move |_| {
+        show_settings_dialog(&window);
+    });
+}
+
+fn show_settings_dialog(parent: &adw::ApplicationWindow) {
+    let dialog = adw::PreferencesDialog::builder()
+        .title("Settings")
+        .search_enabled(false)
+        .build();
+    let page = adw::PreferencesPage::builder()
+        .title("Settings")
+        .icon_name("preferences-system-symbolic")
+        .build();
+    let startup_group = adw::PreferencesGroup::builder().title("Startup").build();
+    let autostart_row = adw::SwitchRow::builder()
+        .title("Start at login")
+        .subtitle("Run quietly in the background after you sign in")
+        .active(autostart_enabled())
+        .build();
+
+    connect_autostart_row(&autostart_row, &dialog);
+    startup_group.add(&autostart_row);
+    page.add(&startup_group);
+    dialog.add(&page);
+    dialog.present(Some(parent));
+}
+
+fn connect_autostart_row(row: &adw::SwitchRow, dialog: &adw::PreferencesDialog) {
+    let handling_change = Rc::new(Cell::new(false));
+    let dialog = dialog.clone();
+    row.connect_active_notify(move |row| {
+        if handling_change.get() {
+            return;
+        }
+
+        let enabled = row.is_active();
+        match set_autostart_enabled(enabled) {
+            Ok(()) => {
+                let message = if enabled {
+                    "Start at login enabled"
+                } else {
+                    "Start at login disabled"
+                };
+                dialog.add_toast(adw::Toast::new(message));
+            }
+            Err(err) => {
+                handling_change.set(true);
+                row.set_active(!enabled);
+                handling_change.set(false);
+                dialog.add_toast(adw::Toast::new(&format!(
+                    "Could not update login startup: {err}"
+                )));
+            }
+        }
     });
 }
 
@@ -1139,6 +1207,100 @@ fn app_db_path() -> Result<PathBuf> {
     Ok(dirs.data_dir().join("feeds.sqlite3"))
 }
 
+fn autostart_enabled() -> bool {
+    autostart_file_path().is_ok_and(|path| path.is_file())
+}
+
+fn set_autostart_enabled(enabled: bool) -> Result<()> {
+    let path = autostart_file_path()?;
+    if enabled {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("autostart path has no parent directory"))?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating autostart directory {}", parent.display()))?;
+        let exec_command = autostart_exec_command()?;
+        let icon = app_icon_value();
+        fs::write(&path, desktop_file_contents(&exec_command, &icon))
+            .with_context(|| format!("writing autostart entry {}", path.display()))?;
+    } else {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("removing autostart entry {}", path.display()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn autostart_file_path() -> Result<PathBuf> {
+    Ok(xdg_config_home()?
+        .join("autostart")
+        .join(format!("{APP_ID}.desktop")))
+}
+
+fn xdg_config_home() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME")
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
+
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
+    Ok(PathBuf::from(home).join(".config"))
+}
+
+fn autostart_exec_command() -> Result<String> {
+    let exe = std::env::current_exe().context("determining current executable path")?;
+    Ok(format!("{} --background", desktop_exec_arg(&exe)))
+}
+
+fn desktop_exec_arg(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if value
+        .chars()
+        .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '\\' | '$' | '`'))
+    {
+        let escaped = value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`");
+        format!("\"{escaped}\"")
+    } else {
+        value.into_owned()
+    }
+}
+
+fn app_icon_value() -> String {
+    candidate_icon_dirs()
+        .into_iter()
+        .map(|path| path.join(format!("{APP_ID}.svg")))
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| APP_ID.into())
+}
+
+fn desktop_file_contents(exec_command: &str, icon: &str) -> String {
+    format!(
+        "\
+[Desktop Entry]
+Name={DISPLAY_NAME}
+Comment={DESKTOP_COMMENT}
+Exec={exec_command}
+Icon={icon}
+Terminal=false
+Type=Application
+Categories=Network;GTK;
+StartupNotify=true
+"
+    )
+}
+
 fn sha256_hex(input: &str) -> String {
     format!("{:x}", Sha256::digest(input.as_bytes()))
 }
@@ -1232,5 +1394,22 @@ mod tests {
             StartupCommand::Run(_) => panic!("expected argument parsing to fail"),
             StartupCommand::Exit(code) => assert_eq!(code, glib::ExitCode::FAILURE),
         }
+    }
+
+    #[test]
+    fn quotes_desktop_exec_paths_with_spaces() {
+        assert_eq!(
+            desktop_exec_arg(Path::new("/tmp/Status Feed/status-feed-notifier")),
+            "\"/tmp/Status Feed/status-feed-notifier\""
+        );
+    }
+
+    #[test]
+    fn writes_background_autostart_desktop_entry() {
+        let contents =
+            desktop_file_contents("/app/status-feed-notifier --background", "/app/icon.svg");
+        assert!(contents.contains("Name=Status Feed Notifier\n"));
+        assert!(contents.contains("Exec=/app/status-feed-notifier --background\n"));
+        assert!(contents.contains("Icon=/app/icon.svg\n"));
     }
 }
