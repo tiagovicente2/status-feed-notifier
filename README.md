@@ -14,6 +14,34 @@ https://status.claude.com/history.atom
 cargo run
 ```
 
+## Install on Linux
+
+Install it as a per-user desktop app:
+
+```bash
+scripts/install.sh
+```
+
+This installs:
+
+```text
+~/.local/bin/status-feed-notifier
+~/.local/share/applications/dev.tiago.StatusFeedNotifier.desktop
+~/.local/share/icons/hicolor/scalable/apps/dev.tiago.StatusFeedNotifier.svg
+```
+
+To also start it when you log in:
+
+```bash
+scripts/install.sh --autostart
+```
+
+Uninstall:
+
+```bash
+scripts/uninstall.sh
+```
+
 Runtime data is stored in:
 
 ```text
