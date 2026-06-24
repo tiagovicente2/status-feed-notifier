@@ -58,7 +58,6 @@ struct NewEntry {
 #[derive(Debug)]
 struct PollOutcome {
     feeds: Vec<Feed>,
-    entries: Vec<StoredEntry>,
     notifications: Vec<NewEntry>,
     errors: Vec<String>,
 }
@@ -82,6 +81,7 @@ struct AppWidgets {
     sender: Sender<PollMessage>,
     polling: Cell<bool>,
     last_poll: Cell<i64>,
+    selected_feed_id: Cell<Option<i64>>,
     feed_entry: gtk::Entry,
     feed_list: gtk::ListBox,
     entry_list: gtk::ListBox,
@@ -244,10 +244,10 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     toolbar_view.add_top_bar(&header);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(16);
-    root.set_margin_end(16);
+    root.set_margin_top(20);
+    root.set_margin_bottom(20);
+    root.set_margin_start(20);
+    root.set_margin_end(20);
     toolbar_view.set_content(Some(&root));
 
     let split = gtk::Paned::new(gtk::Orientation::Horizontal);
@@ -256,8 +256,8 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     split.set_shrink_start_child(false);
     root.append(&split);
 
-    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    sidebar.set_size_request(300, -1);
+    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    sidebar.set_size_request(320, -1);
     split.set_start_child(Some(&sidebar));
 
     let add_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -271,7 +271,7 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     sidebar.append(&add_row);
 
     let feed_list = gtk::ListBox::new();
-    feed_list.set_selection_mode(gtk::SelectionMode::None);
+    feed_list.set_selection_mode(gtk::SelectionMode::Single);
     feed_list.add_css_class("boxed-list");
     let feed_scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
@@ -280,7 +280,7 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         .build();
     sidebar.append(&feed_scroll);
 
-    let settings_group = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let settings_group = gtk::Box::new(gtk::Orientation::Vertical, 12);
     let interval_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let interval_label = gtk::Label::builder()
         .label("Refresh minutes")
@@ -323,7 +323,7 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     settings_group.append(&notifications_row);
     sidebar.append(&settings_group);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     split.set_end_child(Some(&content));
 
     let status_label = gtk::Label::builder()
@@ -353,6 +353,7 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         sender,
         polling: Cell::new(false),
         last_poll: Cell::new(0),
+        selected_feed_id: Cell::new(None),
         feed_entry,
         feed_list,
         entry_list,
@@ -505,6 +506,7 @@ fn connect_autostart_check(check: &gtk::CheckButton, dialog: &adw::PreferencesDi
 fn icon_button(icon: SymbolicIcon, tooltip: &str) -> gtk::Button {
     let symbol = symbolic_icon(icon);
     let button = gtk::Button::builder().tooltip_text(tooltip).build();
+    button.set_size_request(36, 34);
     button.set_child(Some(&symbol));
     button
 }
@@ -696,6 +698,18 @@ fn connect_controls(ui: &Rc<AppWidgets>, add_button: &gtk::Button) {
     ui.feed_entry.connect_activate(move |_| {
         add_feed_from_entry(&ui_for_entry);
     });
+
+    let ui_for_selection = Rc::clone(ui);
+    ui.feed_list.connect_row_selected(move |_, row| {
+        let Some(row) = row else {
+            return;
+        };
+        let Ok(feed_id) = row.widget_name().parse::<i64>() else {
+            return;
+        };
+        ui_for_selection.selected_feed_id.set(Some(feed_id));
+        render_entries_for_selection(&ui_for_selection);
+    });
 }
 
 fn attach_poll_receiver(ui: &Rc<AppWidgets>, receiver: std::sync::mpsc::Receiver<PollMessage>) {
@@ -766,6 +780,9 @@ fn add_feed_from_entry(ui: &Rc<AppWidgets>) {
 fn remove_feed(ui: &Rc<AppWidgets>, feed_id: i64) {
     match Store::open(&ui.db_path).and_then(|store| store.remove_feed(feed_id)) {
         Ok(()) => {
+            if ui.selected_feed_id.get() == Some(feed_id) {
+                ui.selected_feed_id.set(None);
+            }
             render_from_store(ui);
             start_poll(ui);
         }
@@ -800,7 +817,7 @@ fn handle_poll_result(ui: &Rc<AppWidgets>, result: Result<PollOutcome, String>) 
     match result {
         Ok(outcome) => {
             render_feeds(ui, &outcome.feeds);
-            render_entries(ui, &outcome.entries);
+            render_entries_for_selection(ui);
             if ui.notifications_check.is_active() {
                 send_notifications(ui, &outcome.notifications);
             }
@@ -960,12 +977,11 @@ fn candidate_icon_dirs() -> Vec<PathBuf> {
 fn render_from_store(ui: &Rc<AppWidgets>) {
     match Store::open(&ui.db_path).and_then(|store| {
         let feeds = store.list_feeds()?;
-        let entries = store.list_recent_entries(80)?;
-        Ok((feeds, entries))
+        Ok(feeds)
     }) {
-        Ok((feeds, entries)) => {
+        Ok(feeds) => {
             render_feeds(ui, &feeds);
-            render_entries(ui, &entries);
+            render_entries_for_selection(ui);
         }
         Err(err) => {
             ui.status_label
@@ -978,19 +994,33 @@ fn render_feeds(ui: &Rc<AppWidgets>, feeds: &[Feed]) {
     clear_list_box(&ui.feed_list);
 
     if feeds.is_empty() {
+        ui.selected_feed_id.set(None);
         ui.feed_list.append(&empty_row("No feeds yet"));
+        render_entries(ui, &[]);
         return;
     }
 
+    let selected_id = ui
+        .selected_feed_id
+        .get()
+        .filter(|id| feeds.iter().any(|feed| feed.id == *id))
+        .unwrap_or(feeds[0].id);
+    ui.selected_feed_id.set(Some(selected_id));
+    let mut selected_row: Option<gtk::ListBoxRow> = None;
+
     for feed in feeds {
         let row = gtk::ListBoxRow::new();
-        let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        box_.set_margin_top(10);
-        box_.set_margin_bottom(10);
-        box_.set_margin_start(10);
-        box_.set_margin_end(10);
+        row.set_widget_name(&feed.id.to_string());
+        row.set_activatable(true);
+        row.set_selectable(true);
 
-        let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        box_.set_margin_top(12);
+        box_.set_margin_bottom(12);
+        box_.set_margin_start(12);
+        box_.set_margin_end(12);
+
+        let text_box = gtk::Box::new(gtk::Orientation::Vertical, 3);
         text_box.set_hexpand(true);
 
         let title = gtk::Label::builder()
@@ -1021,7 +1051,26 @@ fn render_feeds(ui: &Rc<AppWidgets>, feeds: &[Feed]) {
         box_.append(&text_box);
         box_.append(&remove_button);
         row.set_child(Some(&box_));
+        if feed.id == selected_id {
+            selected_row = Some(row.clone());
+        }
         ui.feed_list.append(&row);
+    }
+
+    if let Some(row) = selected_row {
+        ui.feed_list.select_row(Some(&row));
+    }
+}
+
+fn render_entries_for_selection(ui: &Rc<AppWidgets>) {
+    match Store::open(&ui.db_path)
+        .and_then(|store| store.list_recent_entries_for_feed(ui.selected_feed_id.get(), 80))
+    {
+        Ok(entries) => render_entries(ui, &entries),
+        Err(err) => {
+            ui.status_label
+                .set_text(&format!("Could not read feed entries: {err}"));
+        }
     }
 }
 
@@ -1029,8 +1078,12 @@ fn render_entries(ui: &Rc<AppWidgets>, entries: &[StoredEntry]) {
     clear_list_box(&ui.entry_list);
 
     if entries.is_empty() {
-        ui.entry_list
-            .append(&empty_row("No feed entries have been stored yet"));
+        let message = if ui.selected_feed_id.get().is_some() {
+            "No entries have been stored for this feed yet"
+        } else {
+            "No feed entries have been stored yet"
+        };
+        ui.entry_list.append(&empty_row(message));
         return;
     }
 
@@ -1197,16 +1250,32 @@ impl Store {
         Ok(feeds)
     }
 
-    fn list_recent_entries(&self, limit: usize) -> Result<Vec<StoredEntry>> {
-        let mut stmt = self.conn.prepare(
-            "
-            SELECT feed_title, title, url, updated, summary
-            FROM entries
-            ORDER BY created_at DESC
-            LIMIT ?1
-            ",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
+    fn list_recent_entries_for_feed(
+        &self,
+        feed_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<StoredEntry>> {
+        let mut stmt = match feed_id {
+            Some(_) => self.conn.prepare(
+                "
+                SELECT feed_title, title, url, updated, summary
+                FROM entries
+                WHERE feed_id = ?1
+                ORDER BY created_at DESC
+                LIMIT ?2
+                ",
+            )?,
+            None => self.conn.prepare(
+                "
+                SELECT feed_title, title, url, updated, summary
+                FROM entries
+                ORDER BY created_at DESC
+                LIMIT ?1
+                ",
+            )?,
+        };
+
+        let map_row = |row: &rusqlite::Row<'_>| {
             Ok(StoredEntry {
                 feed_title: row.get(0)?,
                 title: row.get(1)?,
@@ -1214,7 +1283,12 @@ impl Store {
                 updated: row.get(3)?,
                 summary: row.get(4)?,
             })
-        })?;
+        };
+
+        let rows = match feed_id {
+            Some(feed_id) => stmt.query_map(params![feed_id, limit as i64], map_row)?,
+            None => stmt.query_map(params![limit as i64], map_row)?,
+        };
 
         let mut entries = Vec::new();
         for row in rows {
@@ -1312,10 +1386,8 @@ fn poll_all(db_path: &Path) -> Result<PollOutcome> {
     }
 
     let feeds = store.list_feeds()?;
-    let entries = store.list_recent_entries(80)?;
     Ok(PollOutcome {
         feeds,
-        entries,
         notifications,
         errors,
     })
@@ -1595,5 +1667,56 @@ mod tests {
         assert!(contents.contains("Name=Status Feed Notifier\n"));
         assert!(contents.contains("Exec=/app/status-feed-notifier --background\n"));
         assert!(contents.contains("Icon=/app/icon.svg\n"));
+    }
+
+    #[test]
+    fn lists_entries_for_selected_feed_only() {
+        let store = Store {
+            conn: Connection::open_in_memory().expect("open in-memory store"),
+        };
+        store.init().expect("initialize store");
+        store.add_feed("https://example.test/a.atom").unwrap();
+        store.add_feed("https://example.test/b.atom").unwrap();
+        let feeds = store.list_feeds().unwrap();
+
+        store
+            .insert_entry(
+                &feeds[0],
+                "Feed A",
+                &FetchedEntry {
+                    key: "a-entry".into(),
+                    title: "Entry A".into(),
+                    url: None,
+                    updated: None,
+                    summary: "Summary A".into(),
+                },
+                false,
+                1,
+            )
+            .unwrap();
+        store
+            .insert_entry(
+                &feeds[1],
+                "Feed B",
+                &FetchedEntry {
+                    key: "b-entry".into(),
+                    title: "Entry B".into(),
+                    url: None,
+                    updated: None,
+                    summary: "Summary B".into(),
+                },
+                false,
+                2,
+            )
+            .unwrap();
+
+        let all_entries = store.list_recent_entries_for_feed(None, 10).unwrap();
+        assert_eq!(all_entries.len(), 2);
+
+        let feed_a_entries = store
+            .list_recent_entries_for_feed(Some(feeds[0].id), 10)
+            .unwrap();
+        assert_eq!(feed_a_entries.len(), 1);
+        assert_eq!(feed_a_entries[0].title, "Entry A");
     }
 }
