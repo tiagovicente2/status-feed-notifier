@@ -36,6 +36,10 @@ To also start it when you log in:
 curl -fsSL https://raw.githubusercontent.com/tiagovicente2/status-feed-notifier/main/scripts/install.sh | bash -s -- --autostart
 ```
 
+Autostart uses `status-feed-notifier --background`, so the app starts hidden and keeps polling. Closing the window hides it instead of quitting. Reopen it from the app launcher, tray/status item, or a desktop notification. Use the Quit button or tray Quit item to stop the process.
+
+The tray/status item appears on Linux desktops with StatusNotifierItem support, such as KDE Plasma or GNOME with an AppIndicator-compatible extension.
+
 For local development, build and install a release archive from this checkout:
 
 ```bash

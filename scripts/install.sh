@@ -136,21 +136,27 @@ fi
 
 mkdir -p "$DESKTOP_DIR"
 desktop_file="$DESKTOP_DIR/${APP_ID}.desktop"
-cat > "$desktop_file" <<EOF
+write_desktop_file() {
+  local path="$1"
+  local exec_command="$2"
+  cat > "$path" <<EOF
 [Desktop Entry]
 Name=${DISPLAY_NAME}
 Comment=Subscribe to RSS and Atom status feeds
-Exec=${launcher}
+Exec=${exec_command}
 Icon=${icon_path}
 Terminal=false
 Type=Application
 Categories=Network;GTK;
 StartupNotify=true
 EOF
+}
+
+write_desktop_file "$desktop_file" "$launcher"
 
 if [[ "$autostart" == true ]]; then
   mkdir -p "$AUTOSTART_DIR"
-  cp "$desktop_file" "$AUTOSTART_DIR/${APP_ID}.desktop"
+  write_desktop_file "$AUTOSTART_DIR/${APP_ID}.desktop" "$launcher --background"
 fi
 
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true

@@ -7,7 +7,7 @@ use gtk::glib;
 use reqwest::blocking::Client;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -17,6 +17,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const APP_ID: &str = "dev.tiago.StatusFeedNotifier";
 const DEFAULT_FEED_URL: &str = "https://status.claude.com/history.atom";
 const USER_AGENT: &str = "StatusFeedNotifier/0.1 (+https://status.claude.com/)";
+
+thread_local! {
+    static APP_STATE: RefCell<Option<Rc<AppWidgets>>> = const { RefCell::new(None) };
+    static STARTUP_OPTIONS: Cell<StartupOptions> = const { Cell::new(StartupOptions { start_hidden: false }) };
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StartupOptions {
+    start_hidden: bool,
+}
 
 #[derive(Debug, Clone)]
 struct Feed {
@@ -56,8 +66,16 @@ enum PollMessage {
     Finished(Result<PollOutcome, String>),
 }
 
+#[derive(Debug)]
+enum UiCommand {
+    ShowWindow,
+    Refresh,
+    Quit,
+}
+
 struct AppWidgets {
     app: adw::Application,
+    window: adw::ApplicationWindow,
     db_path: PathBuf,
     sender: Sender<PollMessage>,
     polling: Cell<bool>,
@@ -69,6 +87,8 @@ struct AppWidgets {
     status_label: gtk::Label,
     interval_spin: gtk::SpinButton,
     notifications_switch: gtk::Switch,
+    _hold_guard: gio::ApplicationHoldGuard,
+    _tray_handle: Option<ksni::blocking::Handle<StatusTray>>,
 }
 
 struct Store {
@@ -90,20 +110,88 @@ struct FetchedEntry {
     summary: String,
 }
 
+struct StatusTray {
+    sender: Sender<UiCommand>,
+    icon_name: String,
+    icon_theme_path: String,
+}
+
 fn main() -> glib::ExitCode {
-    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
-        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-        return glib::ExitCode::SUCCESS;
+    if let StartupCommand::Exit(code) = parse_startup_args(std::env::args().skip(1)) {
+        return code;
     }
 
     adw::init().expect("failed to initialize libadwaita");
 
-    let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_activate(build_ui);
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        .build();
+    app.connect_command_line(|app, command_line| {
+        match parse_startup_args(
+            command_line
+                .arguments()
+                .into_iter()
+                .skip(1)
+                .map(|arg| arg.to_string_lossy().to_string()),
+        ) {
+            StartupCommand::Run(options) => {
+                STARTUP_OPTIONS.with(|startup_options| startup_options.set(options));
+                app.activate();
+                glib::ExitCode::SUCCESS
+            }
+            StartupCommand::Exit(code) => code,
+        }
+    });
+    app.connect_activate(|app| {
+        let options = STARTUP_OPTIONS.with(Cell::get);
+        build_ui(app, options);
+    });
     app.run()
 }
 
-fn build_ui(app: &adw::Application) {
+enum StartupCommand {
+    Run(StartupOptions),
+    Exit(glib::ExitCode),
+}
+
+fn parse_startup_args(args: impl IntoIterator<Item = String>) -> StartupCommand {
+    let mut start_hidden = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--background" => start_hidden = true,
+            "--version" | "-V" => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                return StartupCommand::Exit(glib::ExitCode::SUCCESS);
+            }
+            "--help" | "-h" => {
+                println!(
+                    "{}\n\nUsage: status-feed-notifier [--background] [--version]",
+                    env!("CARGO_PKG_DESCRIPTION")
+                );
+                return StartupCommand::Exit(glib::ExitCode::SUCCESS);
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return StartupCommand::Exit(glib::ExitCode::FAILURE);
+            }
+        }
+    }
+
+    StartupCommand::Run(StartupOptions { start_hidden })
+}
+
+fn build_ui(app: &adw::Application, options: StartupOptions) {
+    if let Some(window) = app.windows().first() {
+        if options.start_hidden {
+            window.set_visible(false);
+        } else {
+            window.present();
+        }
+        return;
+    }
+
     let db_path = match app_db_path().and_then(|path| {
         let store = Store::open(&path)?;
         store.init()?;
@@ -123,6 +211,7 @@ fn build_ui(app: &adw::Application) {
         .default_width(920)
         .default_height(640)
         .build();
+    window.set_hide_on_close(true);
 
     let toolbar_view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -136,6 +225,11 @@ fn build_ui(app: &adw::Application) {
         .icon_name("view-refresh-symbolic")
         .tooltip_text("Refresh feeds")
         .build();
+    let quit_button = gtk::Button::builder()
+        .icon_name("application-exit-symbolic")
+        .tooltip_text("Quit")
+        .build();
+    header.pack_end(&quit_button);
     header.pack_end(&refresh_button);
     toolbar_view.add_top_bar(&header);
 
@@ -226,8 +320,11 @@ fn build_ui(app: &adw::Application) {
     content.append(&entry_scroll);
 
     let (sender, receiver) = mpsc::channel();
+    let (ui_sender, ui_receiver) = mpsc::channel();
+    let tray_handle = start_tray(ui_sender);
     let ui = Rc::new(AppWidgets {
         app: app.clone(),
+        window: window.clone(),
         db_path,
         sender,
         polling: Cell::new(false),
@@ -239,17 +336,35 @@ fn build_ui(app: &adw::Application) {
         status_label,
         interval_spin,
         notifications_switch,
+        _hold_guard: app.hold(),
+        _tray_handle: tray_handle,
     });
 
     install_actions(app, &window);
+    connect_window_lifecycle(&window);
+    connect_quit_button(app, &quit_button);
     connect_controls(&ui, &add_button);
     render_from_store(&ui);
     attach_poll_receiver(&ui, receiver);
+    attach_ui_command_receiver(&ui, ui_receiver);
     attach_auto_refresh(&ui);
+    APP_STATE.with(|state| {
+        *state.borrow_mut() = Some(Rc::clone(&ui));
+    });
 
     start_poll(&ui);
     window.set_content(Some(&toolbar_view));
-    window.present();
+    if options.start_hidden {
+        window.set_opacity(0.0);
+        window.present();
+        let window = window.clone();
+        glib::idle_add_local_once(move || {
+            window.set_visible(false);
+            window.set_opacity(1.0);
+        });
+    } else {
+        window.present();
+    }
 }
 
 fn show_startup_error(app: &adw::Application, message: &str) {
@@ -291,6 +406,20 @@ fn install_actions(app: &adw::Application, window: &adw::ApplicationWindow) {
     app.add_action(&show_action);
 }
 
+fn connect_window_lifecycle(window: &adw::ApplicationWindow) {
+    window.connect_close_request(|window| {
+        window.set_visible(false);
+        glib::Propagation::Stop
+    });
+}
+
+fn connect_quit_button(app: &adw::Application, quit_button: &gtk::Button) {
+    let app = app.clone();
+    quit_button.connect_clicked(move |_| {
+        app.quit();
+    });
+}
+
 fn connect_controls(ui: &Rc<AppWidgets>, add_button: &gtk::Button) {
     let ui_for_refresh = Rc::clone(ui);
     ui.refresh_button.connect_clicked(move |_| {
@@ -315,6 +444,21 @@ fn attach_poll_receiver(ui: &Rc<AppWidgets>, receiver: std::sync::mpsc::Receiver
         while let Ok(message) = receiver.try_recv() {
             match message {
                 PollMessage::Finished(result) => handle_poll_result(&ui, result),
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn attach_ui_command_receiver(ui: &Rc<AppWidgets>, receiver: std::sync::mpsc::Receiver<UiCommand>) {
+    let receiver = Rc::new(receiver);
+    let ui = Rc::clone(ui);
+    glib::timeout_add_seconds_local(1, move || {
+        while let Ok(command) = receiver.try_recv() {
+            match command {
+                UiCommand::ShowWindow => ui.window.present(),
+                UiCommand::Refresh => start_poll(&ui),
+                UiCommand::Quit => ui.app.quit(),
             }
         }
         glib::ControlFlow::Continue
@@ -431,6 +575,128 @@ fn send_notifications(ui: &Rc<AppWidgets>, entries: &[NewEntry]) {
         notification.set_default_action("app.show-window");
         ui.app.send_notification(Some(&entry.key), &notification);
     }
+}
+
+fn start_tray(sender: Sender<UiCommand>) -> Option<ksni::blocking::Handle<StatusTray>> {
+    use ksni::blocking::TrayMethods;
+
+    let tray = StatusTray {
+        sender,
+        icon_name: tray_icon_name(),
+        icon_theme_path: tray_icon_theme_path(),
+    };
+
+    match tray.assume_sni_available(true).spawn() {
+        Ok(handle) => Some(handle),
+        Err(err) => {
+            eprintln!("status tray unavailable: {err}");
+            None
+        }
+    }
+}
+
+impl StatusTray {
+    fn send(&self, command: UiCommand) {
+        let _ = self.sender.send(command);
+    }
+}
+
+impl ksni::Tray for StatusTray {
+    fn id(&self) -> String {
+        APP_ID.into()
+    }
+
+    fn title(&self) -> String {
+        "Status Feed Notifier".into()
+    }
+
+    fn icon_name(&self) -> String {
+        self.icon_name.clone()
+    }
+
+    fn icon_theme_path(&self) -> String {
+        self.icon_theme_path.clone()
+    }
+
+    fn tool_tip(&self) -> ksni::ToolTip {
+        ksni::ToolTip {
+            icon_name: self.icon_name(),
+            title: self.title(),
+            description: "Polling subscribed status feeds".into(),
+            ..Default::default()
+        }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.send(UiCommand::ShowWindow);
+    }
+
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        self.send(UiCommand::ShowWindow);
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::*;
+
+        vec![
+            StandardItem {
+                label: "Open".into(),
+                icon_name: "window-new".into(),
+                activate: Box::new(|tray: &mut StatusTray| tray.send(UiCommand::ShowWindow)),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Refresh now".into(),
+                icon_name: "view-refresh".into(),
+                activate: Box::new(|tray: &mut StatusTray| tray.send(UiCommand::Refresh)),
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
+                label: "Quit".into(),
+                icon_name: "application-exit".into(),
+                activate: Box::new(|tray: &mut StatusTray| tray.send(UiCommand::Quit)),
+                ..Default::default()
+            }
+            .into(),
+        ]
+    }
+}
+
+fn tray_icon_name() -> String {
+    if !tray_icon_theme_path().is_empty() {
+        APP_ID.into()
+    } else {
+        "network-transmit-receive".into()
+    }
+}
+
+fn tray_icon_theme_path() -> String {
+    for path in candidate_icon_dirs() {
+        if path.join(format!("{APP_ID}.svg")).is_file() {
+            return path.to_string_lossy().to_string();
+        }
+    }
+
+    String::new()
+}
+
+fn candidate_icon_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        dirs.push(exe_dir.join("resources"));
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        dirs.push(current_dir.join("packaging"));
+    }
+
+    dirs
 }
 
 fn render_from_store(ui: &Rc<AppWidgets>) {
@@ -950,5 +1216,21 @@ mod tests {
     fn falls_back_to_stable_hash() {
         let hash = sha256_hex("feed|entry");
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn parses_background_startup_option() {
+        match parse_startup_args(["--background".to_string()]) {
+            StartupCommand::Run(options) => assert!(options.start_hidden),
+            StartupCommand::Exit(_) => panic!("expected app to run"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_startup_option() {
+        match parse_startup_args(["--bad-option".to_string()]) {
+            StartupCommand::Run(_) => panic!("expected argument parsing to fail"),
+            StartupCommand::Exit(code) => assert_eq!(code, glib::ExitCode::FAILURE),
+        }
     }
 }
