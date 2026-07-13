@@ -222,8 +222,8 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Status Feed Notifier")
-        .default_width(920)
-        .default_height(640)
+        .default_width(1040)
+        .default_height(680)
         .build();
     window.set_hide_on_close(true);
 
@@ -243,21 +243,23 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     header.pack_end(&refresh_button);
     toolbar_view.add_top_bar(&header);
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    root.set_margin_top(20);
-    root.set_margin_bottom(20);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.set_margin_top(24);
+    root.set_margin_bottom(24);
+    root.set_margin_start(24);
+    root.set_margin_end(24);
     toolbar_view.set_content(Some(&root));
 
     let split = gtk::Paned::new(gtk::Orientation::Horizontal);
     split.set_wide_handle(true);
+    split.set_vexpand(true);
     split.set_resize_start_child(false);
     split.set_shrink_start_child(false);
     root.append(&split);
 
-    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 14);
-    sidebar.set_size_request(320, -1);
+    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    sidebar.set_size_request(340, -1);
+    sidebar.set_margin_end(12);
     split.set_start_child(Some(&sidebar));
 
     let add_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -280,7 +282,9 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
         .build();
     sidebar.append(&feed_scroll);
 
-    let settings_group = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let settings_group = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    settings_group.set_margin_start(4);
+    settings_group.set_margin_end(4);
     let interval_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let interval_label = gtk::Label::builder()
         .label("Refresh minutes")
@@ -323,7 +327,8 @@ fn build_ui(app: &adw::Application, options: StartupOptions) {
     settings_group.append(&notifications_row);
     sidebar.append(&settings_group);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    content.set_margin_start(12);
     split.set_end_child(Some(&content));
 
     let status_label = gtk::Label::builder()
