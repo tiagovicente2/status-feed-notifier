@@ -5,7 +5,7 @@ edition = "2024"
 description = "Subscribe to RSS and Atom status feeds and receive desktop notifications."
 
 [dependencies]
-adw = { package = "libadwaita", version = "0.9.1", features = ["v1_5", "gtk_v4_14"] }
+adw = { package = "libadwaita", version = "0.9.1", features = ["v1_5"] }
 anyhow = "1.0.100"
 directories = "6.0.0"
 feed-rs = "2.3.1"
