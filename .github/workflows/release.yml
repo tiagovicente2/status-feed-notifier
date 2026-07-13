@@ -11,15 +11,30 @@ permissions:
 
 jobs:
   build:
-    name: Build linux-x64
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+          - os: macos-14
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libsqlite3-dev pkg-config
+
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install gtk4 libadwaita pkg-config
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,10 +50,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: status-feed-notifier-linux-x64
-          path: |
-            dist/status-feed-notifier-linux-x64.tar.gz
-            dist/SHA256SUMS
+          name: status-feed-notifier-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/status-feed-notifier-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
 
   publish:
     name: Publish GitHub Release

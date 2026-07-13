@@ -91,7 +91,7 @@ struct AppWidgets {
     interval_value_label: gtk::Label,
     notifications_check: gtk::CheckButton,
     _hold_guard: gio::ApplicationHoldGuard,
-    _tray_handle: Option<ksni::blocking::Handle<StatusTray>>,
+    _tray_handle: TrayHandle,
 }
 
 struct Store {
@@ -113,6 +113,12 @@ struct FetchedEntry {
     summary: String,
 }
 
+#[cfg(target_os = "linux")]
+type TrayHandle = Option<ksni::blocking::Handle<StatusTray>>;
+#[cfg(not(target_os = "linux"))]
+type TrayHandle = ();
+
+#[cfg(target_os = "linux")]
 struct StatusTray {
     sender: Sender<UiCommand>,
     icon_name: String,
@@ -860,7 +866,8 @@ fn send_notifications(ui: &Rc<AppWidgets>, entries: &[NewEntry]) {
     }
 }
 
-fn start_tray(sender: Sender<UiCommand>) -> Option<ksni::blocking::Handle<StatusTray>> {
+#[cfg(target_os = "linux")]
+fn start_tray(sender: Sender<UiCommand>) -> TrayHandle {
     use ksni::blocking::TrayMethods;
 
     let tray = StatusTray {
@@ -878,12 +885,14 @@ fn start_tray(sender: Sender<UiCommand>) -> Option<ksni::blocking::Handle<Status
     }
 }
 
+#[cfg(target_os = "linux")]
 impl StatusTray {
     fn send(&self, command: UiCommand) {
         let _ = self.sender.send(command);
     }
 }
 
+#[cfg(target_os = "linux")]
 impl ksni::Tray for StatusTray {
     fn id(&self) -> String {
         APP_ID.into()
@@ -945,6 +954,10 @@ impl ksni::Tray for StatusTray {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn start_tray(_sender: Sender<UiCommand>) -> TrayHandle {}
+
+#[cfg(target_os = "linux")]
 fn tray_icon_name() -> String {
     if !tray_icon_theme_path().is_empty() {
         APP_ID.into()
@@ -953,6 +966,7 @@ fn tray_icon_name() -> String {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn tray_icon_theme_path() -> String {
     for path in candidate_icon_dirs() {
         if path.join(format!("{APP_ID}.svg")).is_file() {

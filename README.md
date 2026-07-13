@@ -47,6 +47,18 @@ scripts/package-release.sh
 scripts/install.sh --archive dist/status-feed-notifier-linux-x64.tar.gz
 ```
 
+## macOS
+
+GitHub releases also include an Apple Silicon archive named
+`status-feed-notifier-macos-arm64.tar.gz`. Install the runtime libraries with
+Homebrew before running the binary:
+
+```bash
+brew install gtk4 libadwaita
+```
+
+The macOS build does not include the Linux tray/status item.
+
 Uninstall the app files:
 
 ```bash

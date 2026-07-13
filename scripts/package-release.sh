@@ -10,6 +10,7 @@ os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
   Linux) platform="linux" ;;
+  Darwin) platform="macos" ;;
   *) echo "unsupported OS: $os" >&2; exit 1 ;;
 esac
 case "$arch" in
@@ -31,7 +32,11 @@ install -m 644 "$ROOT_DIR/packaging/${APP_ID}.svg" "$DIST_DIR/$artifact_dir/reso
 tar -czf "$DIST_DIR/$archive" -C "$DIST_DIR" "$artifact_dir"
 (
   cd "$DIST_DIR"
-  sha256sum *.tar.gz > SHA256SUMS
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum *.tar.gz > SHA256SUMS
+  else
+    shasum -a 256 *.tar.gz > SHA256SUMS
+  fi
 )
 
 printf 'Built %s\n' "$DIST_DIR/$archive"
